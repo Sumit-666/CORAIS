@@ -1,0 +1,444 @@
+CORAIS — Complete Architecture & Concept Summary
+================================================
+
+1. What is CORAIS?
+-------------------
+CORAIS is the central AI orchestration brain of the platform.
+
+It intelligently manages:
+- AI workflows
+- model selection
+- memory
+- event-driven automation
+- multi-agent coordination
+- reasoning
+- governance
+- human approvals
+
+Simple Definition:
+CORAIS is an AI operating system for the Jobazy ecosystem.
+
+It decides:
+- which model to use
+- which workflow to run
+- which agent should handle the task
+- when humans should approve actions
+- how AI services communicate together
+
+------------------------------------------------------------
+
+2. Difference Between API Gateway and CORAIS
+--------------------------------------------
+
+API Gateway:
+- infrastructure layer
+- authentication
+- routing
+- tenant resolution
+- rate limiting
+- security
+
+CORAIS:
+- AI intelligence layer
+- orchestration
+- reasoning
+- workflow automation
+- model routing
+- AI decision engine
+
+Simple Analogy:
+API Gateway = Security Guard
+CORAIS = Brain
+
+Flow:
+Frontend
+   ↓
+API Gateway
+   ↓
+Backend Services
+   ↓
+CORAIS AI Brain
+
+------------------------------------------------------------
+
+3. Core Architecture of CORAIS
+------------------------------
+
+Frontend Apps
+(Web / Mobile / Admin)
+        ↓
+API Gateway
+        ↓
+Core Backend Services
+        ↓
+Kafka Event Bus
+        ↓
+CORAIS Brain
+        ↓
+AI Agents + Workflows
+        ↓
+LLM Gateway
+        ↓
+Multiple AI Models
+        ↓
+Memory + Rules + HILT
+        ↓
+Final AI Output
+
+------------------------------------------------------------
+
+4. Main Components Inside CORAIS
+--------------------------------
+
+A. Workflow Orchestrator
+- controls AI workflows
+- manages steps
+- branching
+- retries
+- approvals
+- automation
+
+Examples:
+- job matching workflow
+- resume analysis workflow
+- interview evaluation workflow
+
+------------------------------------------------------------
+
+B. AI Agents
+------------
+
+Each agent has specialized responsibility.
+
+Examples:
+- JD Parser Agent
+- Resume Reader Agent
+- Skill Graph Agent
+- Recommendation Agent
+- CRI Agent
+- Notification Agent
+- Interview Coach Agent
+
+------------------------------------------------------------
+
+C. LLM Gateway
+--------------
+
+Central layer managing all AI models.
+
+Purpose:
+- choose best model
+- fallback handling
+- retries
+- prompt management
+- token tracking
+- cost optimization
+- safety filtering
+
+Flow:
+CORAIS
+   ↓
+LLM Gateway
+   ↓
+GPT / Claude / Gemini / NVIDIA
+
+------------------------------------------------------------
+
+D. Model Selection Engine
+-------------------------
+
+CORAIS dynamically selects models based on:
+- expertise
+- cost
+- latency
+- speed
+- reasoning capability
+- scenario
+- tenant tier
+
+Examples:
+
+JD Parsing:
+- Gemini Flash
+- fast + cheap
+
+Skill Matching:
+- NVIDIA Embedding Model
+- optimized for embeddings
+
+Career Guidance:
+- GPT-4
+- strong reasoning
+
+------------------------------------------------------------
+
+5. Kafka in CORAIS
+------------------
+
+Kafka is the event-driven communication system.
+
+Purpose:
+- async communication
+- decoupled architecture
+- scalable workflows
+
+Example Flow:
+
+Recruiter creates job
+        ↓
+JOB_CREATED event
+        ↓
+Kafka Topic
+        ↓
+Consumers React
+
+Consumers:
+- JD Parser
+- Notification Service
+- Analytics
+- Recommendation Engine
+
+Producer:
+Service sending event
+
+Consumer:
+Service listening to event
+
+Topic:
+Event channel/category
+
+------------------------------------------------------------
+
+6. Memory in CORAIS
+-------------------
+
+Memory stores user context and workflow history.
+
+Examples:
+- candidate skills
+- recruiter preferences
+- interview history
+- application history
+- weak areas
+- preferred roles
+
+Types:
+- short-term memory
+- long-term memory
+
+Technologies:
+- Redis
+- PostgreSQL
+- Vector DB
+
+------------------------------------------------------------
+
+7. CRI Rules Engine
+-------------------
+
+CRI = Career Readiness Index
+
+Purpose:
+- measure candidate readiness
+- ranking
+- scoring
+
+Example Factors:
+- skills
+- projects
+- GitHub activity
+- communication
+- interview performance
+
+Example Rule:
+
+if github_verified:
+    score += 10
+
+if communication_score < 40:
+    score -= 15
+
+------------------------------------------------------------
+
+8. HILT Layer
+-------------
+
+HILT = Human-in-the-Loop Governance
+
+Purpose:
+- approval workflows
+- enterprise safety
+- auditability
+
+Examples:
+
+T0:
+AI suggestions only
+
+T1:
+human confirmation required
+
+T2:
+critical decisions
+
+T3:
+admin-only operations
+
+Example:
+AI shortlist generated
+      ↓
+Recruiter approval required
+      ↓
+Workflow continues
+
+------------------------------------------------------------
+
+9. Agentic RAG in CORAIS
+------------------------
+
+CORAIS uses Agentic RAG internally.
+
+RAG:
+Retrieve data + generate response.
+
+Agentic RAG:
+AI agents reason through retrieval workflows.
+
+Example:
+- retrieve candidates
+- analyze CRI
+- check GitHub
+- rank candidates
+- generate reasoning
+
+But:
+CORAIS is larger than just Agentic RAG.
+
+CORAIS also includes:
+- orchestration
+- Kafka events
+- governance
+- model routing
+- memory
+- workflows
+
+------------------------------------------------------------
+
+10. LangGraph and CORAIS
+------------------------
+
+LangGraph is the closest framework to CORAIS architecture.
+
+LangGraph provides:
+- workflow graphs
+- memory
+- multi-agent orchestration
+- branching
+- state management
+- human-in-loop workflows
+
+Core Concepts:
+- Nodes = agents/tasks
+- Edges = workflow flow
+- State = shared memory
+
+Example Workflow:
+JD Parser
+   ↓
+Retriever
+   ↓
+CRI Scorer
+   ↓
+Notification Agent
+
+------------------------------------------------------------
+
+11. Real Jobazy Workflow Example
+--------------------------------
+
+Recruiter creates job
+        ↓
+API Gateway validates request
+        ↓
+Opportunity Service stores job
+        ↓
+Kafka publishes JOB_CREATED
+        ↓
+CORAIS Consumer receives event
+        ↓
+Workflow starts
+        ↓
+JD Parser Agent runs
+        ↓
+Model Selection Engine chooses Gemini Flash
+        ↓
+Skills extracted
+        ↓
+Embedding Model generates vectors
+        ↓
+Vector DB retrieves candidates
+        ↓
+CRI Rules calculate scores
+        ↓
+HILT checks if approval required
+        ↓
+Notifications generated
+        ↓
+Recruiter receives shortlist
+
+------------------------------------------------------------
+
+12. Suggested Tech Stack
+------------------------
+
+Backend:
+- FastAPI / Node.js
+
+Orchestration:
+- LangGraph
+
+Events:
+- Kafka
+
+Memory:
+- Redis
+- PostgreSQL
+
+Vector DB:
+- Pinecone
+- Qdrant
+- pgvector
+
+AI Models:
+- GPT
+- Claude
+- Gemini
+- NVIDIA models
+
+Monitoring:
+- LangSmith
+- OpenTelemetry
+
+------------------------------------------------------------
+
+13. Best GitHub Repositories
+----------------------------
+
+LangGraph:
+https://github.com/langchain-ai/langgraph
+
+Agentic RAG Example:
+https://github.com/langchain-ai/langgraph/blob/main/examples/rag/langgraph_agentic_rag.ipynb
+
+Multi-Agent Example:
+https://github.com/langchain-ai/langgraph/blob/main/examples/multi_agent/multi-agent-collaboration.ipynb
+
+MultiAgenticRAG:
+https://github.com/nicoladisabato/MultiAgenticRAG
+
+------------------------------------------------------------
+
+14. Final One-Line Definition
+-----------------------------
+
+CORAIS is an event-driven multi-agent AI orchestration architecture that intelligently routes workflows across models, memory systems, rules engines, AI agents, and human-governance layers to automate hiring and career workflows at enterprise scale.

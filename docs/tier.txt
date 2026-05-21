@@ -1,0 +1,5 @@
+| Tier / Provider                              | Anthropic        | OpenAI       | Google                |
+| -------------------------------------------- | ---------------- | ------------ | --------------------- |
+| **Tier 1**<br>Highest Quality / Highest Cost | Claude Opus 4    | GPT-5        | Gemini 2.5 Pro        |
+| **Tier 2**<br>Balanced Cost & Performance    | Claude Sonnet 4  | GPT-5 Mini   | Gemini 2.5 Flash      |
+| **Tier 3**<br>Low Cost / Fast Inference      | Claude Haiku 3.5 | GPT-4.1 Nano | Gemini 2.0 Flash Lite |

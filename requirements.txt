@@ -1,0 +1,7 @@
+anthropic
+openai
+google-generativeai
+langgraph
+python-dotenv
+fastapi
+uvicorn[standard]
