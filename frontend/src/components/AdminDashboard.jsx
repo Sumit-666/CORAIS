@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useAuth } from '../context/AuthContext'
 
 const TIER_COLOR = {
   NORMAL:   '#22c55e',
@@ -22,6 +23,7 @@ function fmtTime(iso) {
 }
 
 export default function AdminDashboard() {
+  const { authFetch } = useAuth()
   const [stats,  setStats]  = useState(null)
   const [logs,   setLogs]   = useState([])
   const [models, setModels] = useState({})
@@ -30,9 +32,9 @@ export default function AdminDashboard() {
   const refresh = useCallback(async () => {
     try {
       const [statsRes, logsRes, modelsRes] = await Promise.all([
-        fetch('/api/admin/stats'),
-        fetch('/api/admin/logs?limit=50'),
-        fetch('/api/admin/models'),
+        authFetch('/api/admin/stats'),
+        authFetch('/api/admin/logs?limit=50'),
+        authFetch('/api/admin/models'),
       ])
       const [s, l, m] = await Promise.all([
         statsRes.json(), logsRes.json(), modelsRes.json(),
@@ -41,11 +43,11 @@ export default function AdminDashboard() {
       setLogs(l)
       setModels(m)
     } catch (e) {
-      console.error(e)
+      if (e.message !== 'Unauthorized') console.error(e)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [authFetch])
 
   useEffect(() => {
     refresh()
@@ -54,7 +56,7 @@ export default function AdminDashboard() {
   }, [refresh])
 
   const toggleModel = async (modelId) => {
-    await fetch(`/api/admin/models/${modelId}/toggle`, { method: 'PATCH' })
+    await authFetch(`/api/admin/models/${modelId}/toggle`, { method: 'PATCH' })
     refresh()
   }
 
@@ -75,7 +77,6 @@ export default function AdminDashboard() {
       {/* ── Budget + Stats row ──────────────────────────────── */}
       <div className="admin-row">
 
-        {/* Budget gauge */}
         <div className="admin-section admin-section--budget">
           <div className="admin-section-title">
             Daily Budget
@@ -99,7 +100,6 @@ export default function AdminDashboard() {
           <p className="budget-pct">{fmtPct(budget.pct ?? 0)} used today</p>
         </div>
 
-        {/* Stats boxes */}
         <div className="admin-stats-grid">
           <div className="stat-box">
             <p className="stat-value">{routing.total_calls ?? 0}</p>
@@ -151,7 +151,6 @@ export default function AdminDashboard() {
       {/* ── Routing distribution + Logs ─────────────────────── */}
       <div className="admin-row admin-row--bottom">
 
-        {/* Routing distribution */}
         <div className="admin-section admin-section--dist">
           <p className="admin-section-title">Model Usage Today</p>
           {Object.keys(modelDist).length === 0 ? (
@@ -180,7 +179,6 @@ export default function AdminDashboard() {
           )}
         </div>
 
-        {/* Recent logs */}
         <div className="admin-section admin-section--logs">
           <p className="admin-section-title">Recent Routing Logs</p>
           {logs.length === 0 ? (

@@ -24,5 +24,18 @@
     "budget_tier": "NORMAL",
     "input_tokens": 236,
     "output_tokens": 96
+  },
+  {
+    "id": "a943d75f",
+    "timestamp": "2026-05-26T17:03:09",
+    "prompt_type": "resume_parse",
+    "model_id": "gpt-4.1-nano",
+    "model_name": "GPT-4.1 Nano",
+    "cost_usd": 0.000169,
+    "latency_ms": 6765,
+    "cache_hit": false,
+    "budget_tier": "NORMAL",
+    "input_tokens": 869,
+    "output_tokens": 205
   }
 ]

@@ -17,6 +17,9 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
+corais frontend/node_modules
+corais frontend/dist/
+corais frontend/.vite/
 # os
 .DS_Store
 Thumbs.db
