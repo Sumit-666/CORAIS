@@ -51,10 +51,26 @@ function AdviceResult({ result }) {
   )
 }
 
+function CoverLetterResult({ result }) {
+  return (
+    <div className="result-block">
+      <p className="result-label">Cover Letter</p>
+      <div className="cover-letter-text">
+        {(result.letter || '').split('\n').map((line, i) => (
+          <p key={i} className={line.trim() === '' ? 'cover-letter-spacer' : 'cover-letter-line'}>
+            {line || ' '}
+          </p>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 const RESULT_MAP = {
   jd_parsing:           JdResult,
   candidate_evaluation: EvalResult,
   career_advice:        AdviceResult,
+  cover_letter:         CoverLetterResult,
 }
 
 export default function StepCard({ stepKey, label, icon, state }) {

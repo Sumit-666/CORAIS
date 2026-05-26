@@ -14,6 +14,7 @@ export const STEPS = [
   { key: 'jd_parsing',           label: 'JD Parser',          icon: '📋' },
   { key: 'candidate_evaluation', label: 'Candidate Evaluator', icon: '🎯' },
   { key: 'career_advice',        label: 'Career Advisor',      icon: '💡' },
+  { key: 'cover_letter',         label: 'Cover Letter',        icon: '✉️' },
 ]
 
 export const INIT_STEP = { status: 'idle', grid: {}, result: null, currentModel: null }

@@ -1,0 +1,8 @@
+[
+  {
+    "id": 1,
+    "title": "Senior Backend Engineer",
+    "company": "Acme Corp",
+    "description": "We are looking for a Senior Backend Engineer with strong experience in Python, FastAPI, PostgreSQL, and Docker. The ideal candidate should be comfortable designing RESTful APIs, writing clean async code, and deploying services with CI/CD pipelines. Familiarity with Redis, Celery, and cloud platforms (AWS/GCP) is a plus."
+  }
+]

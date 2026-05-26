@@ -1,5 +1,6 @@
-export default function InputForm({ form, onChange, onRun, running }) {
+export default function InputForm({ form, onChange, onRun, running, currentJob, jobError }) {
   const set = (field) => (e) => onChange({ ...form, [field]: e.target.value })
+  const canRun = !running && currentJob && form.name.trim() && form.skills.trim()
 
   return (
     <div className="input-panel">
@@ -11,22 +12,37 @@ export default function InputForm({ form, onChange, onRun, running }) {
         </div>
       </div>
 
-      <div className="form-group">
-        <label className="form-label">Job Description</label>
-        <textarea
-          className="form-textarea"
-          rows={5}
-          placeholder="e.g. We need a Python developer with FastAPI, PostgreSQL and Docker…"
-          value={form.jobDescription}
-          onChange={set('jobDescription')}
-        />
-      </div>
+      {/* ── Active Job Posting ─────────────────────────────── */}
+      {jobError ? (
+        <div className="job-card job-card--empty">
+          <p className="job-card-label">Active Opening</p>
+          <p className="job-card-none">No job posted yet. Contact the recruiter.</p>
+        </div>
+      ) : currentJob ? (
+        <div className="job-card">
+          <p className="job-card-label">Active Opening</p>
+          <p className="job-card-title">{currentJob.title}</p>
+          <p className="job-card-company">{currentJob.company}</p>
+          <p className="job-card-desc">{currentJob.description}</p>
+        </div>
+      ) : (
+        <div className="job-card job-card--loading">
+          <p className="job-card-label">Active Opening</p>
+          <p className="job-card-none">Loading…</p>
+        </div>
+      )}
+
+      <div className="form-divider" />
+
+      {/* ── Candidate Profile ──────────────────────────────── */}
+      <p className="section-label">Your Profile</p>
 
       <div className="form-group">
-        <label className="form-label">Candidate Name</label>
+        <label className="form-label">Full Name</label>
         <input
           className="form-input"
           type="text"
+          placeholder="e.g. Jane Smith"
           value={form.name}
           onChange={set('name')}
         />
@@ -58,10 +74,14 @@ export default function InputForm({ form, onChange, onRun, running }) {
       <button
         className="run-btn"
         onClick={onRun}
-        disabled={running}
+        disabled={!canRun}
       >
-        {running ? '⟳  Running…' : '▶  Run CORAIS Pipeline'}
+        {running ? '⟳  Evaluating…' : '▶  Apply & Evaluate'}
       </button>
+
+      {jobError && (
+        <p className="run-btn-hint">A job must be posted before you can apply.</p>
+      )}
 
       <div className="trial-order">
         <p className="trial-order-title">Trial Order (first → last)</p>

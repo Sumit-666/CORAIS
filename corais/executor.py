@@ -22,7 +22,12 @@ def _call_anthropic(model_id: str, task_input: str) -> dict:
         system=ROUTER_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": task_input}],
     )
-    return _parse_json(response.content[0].text)
+    result = _parse_json(response.content[0].text)
+    result["_usage"] = {
+        "input_tokens":  response.usage.input_tokens,
+        "output_tokens": response.usage.output_tokens,
+    }
+    return result
 
 
 def _call_openai(model_id: str, task_input: str) -> dict:
@@ -32,11 +37,16 @@ def _call_openai(model_id: str, task_input: str) -> dict:
         model=model_id,
         messages=[
             {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-            {"role": "user", "content": task_input},
+            {"role": "user",   "content": task_input},
         ],
         response_format={"type": "json_object"},
     )
-    return json.loads(response.choices[0].message.content)
+    result = json.loads(response.choices[0].message.content)
+    result["_usage"] = {
+        "input_tokens":  response.usage.prompt_tokens,
+        "output_tokens": response.usage.completion_tokens,
+    }
+    return result
 
 
 def _call_google(model_id: str, task_input: str) -> dict:
@@ -47,13 +57,19 @@ def _call_google(model_id: str, task_input: str) -> dict:
         system_instruction=ROUTER_SYSTEM_PROMPT,
     )
     response = model.generate_content(task_input)
-    return _parse_json(response.text)
+    result = _parse_json(response.text)
+    usage = getattr(response, "usage_metadata", None)
+    result["_usage"] = {
+        "input_tokens":  getattr(usage, "prompt_token_count",     0) if usage else 0,
+        "output_tokens": getattr(usage, "candidates_token_count", 0) if usage else 0,
+    }
+    return result
 
 
 _CALLERS = {
     "anthropic": _call_anthropic,
-    "openai": _call_openai,
-    "google": _call_google,
+    "openai":    _call_openai,
+    "google":    _call_google,
 }
 
 

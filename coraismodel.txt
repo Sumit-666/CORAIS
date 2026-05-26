@@ -1,0 +1,679 @@
+CORAIS Design Philosophy
+CORAIS is not a wrapper around OpenAI. It is an intelligent routing engine that selects the best AI model for each task, learns from outcomes, manages costs dynamically, and connects 5 AI workforce agents into a unified intelligent system.
+1.1 Core Principles
+Principle	Implementation
+Never single-model dependent	Model Registry with 6+ models across 4 providers. Any model can be swapped, added, or removed without code changes.
+CRI accuracy never degrades	CRI-affecting tasks (resume parse, code eval, interview eval) always get the best available model regardless of budget pressure.
+Security never degrades	Fraud detection always gets premium model for S3+ severity. Trust Protocol is never budget-throttled.
+Cost-optimized by default	Decision Gate resolves 62% of requests at $0 (cache + rules + templates + scoring). Only 38% hit paid models.
+Learn from outcomes	Every AI call tracks quality signals. Monthly analysis shows which models perform best per task. Routing adapts.
+Fail gracefully	If primary model is down, automatic failover to ranked fallback. If all models down, deterministic fallback where possible, queued retry for the rest.
+Multi-language native	Indian language tasks route through Bhashini (cheaper + better). English tasks route through OpenAI/Claude. Language detection is the first routing decision.
+Transparent to agents	AI Workforce agents call CORAIS with a prompt_type. They never specify which model to use. CORAIS decides. Agent code stays clean.
+1.2 Architecture Overview
+CORAIS v3.4.1 ARCHITECTURE:
+
+Agent/Feature Request
+        │
+        ▼
+┌─────────────────────────────────────────┐
+│          DECISION GATE v3.4             │
+│                                         │
+│  Stage 1: Redis Cache                   │
+│  Stage 2: Deterministic Rules            │
+│  Stage 3: Template Fill                  │
+│  Stage 4: Budget Check         ← NEW    │
+│  Stage 5: Model Selection      ← NEW    │
+│  Stage 6: Execute (via Adapter)          │
+│  Stage 7: Quality Signal       ← NEW    │
+│  Stage 8: Cache Write                    │
+└─────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────┐
+│       MODEL ADAPTER LAYER                │
+│                                         │
+│  OpenAIAdapter    (GPT-4o-mini, GPT-4o) │
+│  ClaudeAdapter    (Haiku, Sonnet)        │
+│  BhashiniAdapter  (ASR, NMT, TTS)        │
+│  AIKoshAdapter    (Hindi sentiment, NLP)  │
+│  GeminiAdapter    (future)                │
+│  LocalModelAdapter(future fine-tuned)     │
+└─────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────┐
+│       INTELLIGENCE LAYER                 │
+│                                         │
+│  Model Registry     (capabilities DB)    │
+│  Task-Model Router  (who's best at what) │
+│  Budget Manager     (smart degradation)  │
+│  Quality Tracker    (learn from outcomes) │
+│  Health Monitor     (model availability)  │
+│  Pipeline Orchestrator (multi-step chains)│
+└─────────────────────────────────────────┘
+ 
+2. Intelligence Layer 1: Model Registry
+The Model Registry is CORAIS's knowledge of what AI models are available, what each is good at, what each costs, and whether each is currently healthy.
+2.1 Database Schema
+model_registry
+  ├─ id: VARCHAR(50) PK  -- e.g., 'gpt-4o-mini', 'bhashini-asr'
+  ├─ provider: VARCHAR(30)  -- 'openai', 'anthropic', 'bhashini', 'aikosh'
+  ├─ display_name: VARCHAR(100)
+  ├─ model_version: VARCHAR(50)  -- 'gpt-4o-mini-2024-07-18'
+  ├─ cost_per_1m_input: DECIMAL  -- $ per 1M input tokens
+  ├─ cost_per_1m_output: DECIMAL  -- $ per 1M output tokens
+  ├─ max_context_tokens: INTEGER
+  ├─ max_output_tokens: INTEGER
+  ├─ supported_languages: TEXT[]  -- ['en','hi','te','ta','kn','mr','bn']
+  ├─ strengths: TEXT[]  -- ['fast','cheap','structured_output','reasoning']
+  ├─ weaknesses: TEXT[]  -- ['hindi_mediocre','slow_for_simple']
+  ├─ task_types: TEXT[]  -- ['resume_parse','code_eval','content_gen']
+  ├─ avg_latency_ms: INTEGER  -- rolling 24h average
+  ├─ p99_latency_ms: INTEGER  -- rolling 24h 99th percentile
+  ├─ reliability_score: DECIMAL  -- rolling 7-day success rate (0-1)
+  ├─ rate_limit_rpm: INTEGER  -- requests per minute
+  ├─ is_active: BOOLEAN DEFAULT true
+  ├─ health_status: VARCHAR(10)  -- 'healthy', 'degraded', 'down'
+  ├─ last_health_check: TIMESTAMPTZ
+  └─ created_at, updated_at: TIMESTAMPTZ
+2.2 Registered Models (MVP)
+Model ID	Provider	Cost (Input/Output per 1M)	Latency	Languages	Primary Use
+gpt-4o-mini	OpenAI	$0.15 / $0.60	Fast (1-3s)	EN (good), HI (fair)	Default for all prompt types. Cheap, fast, good structured output.
+gpt-4o	OpenAI	$2.50 / $10.00	Medium (3-8s)	EN (excellent), HI (good)	Premium: Hard code eval, S3+ fraud triage, complex interview eval.
+claude-haiku-4.5	Anthropic	$0.80 / $4.00	Fast (1-3s)	EN (excellent), HI (fair)	Primary fallback if OpenAI down. Good instruction following.
+claude-sonnet-4	Anthropic	$3.00 / $15.00	Medium (3-8s)	EN (excellent)	Premium fallback for complex reasoning tasks.
+bhashini-asr	Bhashini	~$0 (PoC)	3-5s	HI, TE, TA, KN, MR, BN + 16 more	Indian language speech-to-text. Best for Indian accents.
+bhashini-nmt	Bhashini	~$0 (PoC)	1-2s	22 Indian languages	Translation between Indian languages and English.
+bhashini-tts	Bhashini	~$0 (PoC)	1-2s	HI, TE, TA, KN	Text-to-speech for Indian languages. Future audio features.
+aikosh-sentiment	AIKosh	$0 (free)	<1s	HI	Hindi sentiment classification. Trained on Indian data. Replaces OpenAI for this task.
+Models are added by inserting rows in model_registry. No code changes. New adapter file only needed for new PROVIDERS (not new models from existing providers).
+2.3 Health Monitoring
+MODEL HEALTH CHECK (runs every 60 seconds per active model):
+
+async function checkModelHealth(modelId: string) {
+  const model = await getModel(modelId);
+  const adapter = getAdapter(model.provider);
+  
+  try {
+    const start = Date.now();
+    await adapter.ping(model);  // lightweight test call
+    const latency = Date.now() - start;
+    
+    await updateModel(modelId, {
+      health_status: latency > model.p99_latency_ms * 2 ? 'degraded' : 'healthy',
+      last_health_check: new Date(),
+      avg_latency_ms: rollingAvg(model.avg_latency_ms, latency)
+    });
+  } catch (error) {
+    await updateModel(modelId, {
+      health_status: 'down',
+      last_health_check: new Date()
+    });
+    // Alert: model ${modelId} is DOWN
+    emitEvent('model_health_changed', {modelId, status: 'down'});
+  }
+}
+Admin dashboard shows health status of all registered models with color indicators: green (healthy), amber (degraded), red (down). Historical uptime chart per model.
+ 
+3. Intelligence Layer 2: Task-Model Routing
+The routing matrix maps each prompt type to a ranked list of models based on task requirements, language, difficulty, and cost constraints.
+3.1 Database Schema
+task_model_routing
+  ├─ id: SERIAL PK
+  ├─ prompt_type: VARCHAR(50)  -- 'resume_parse', 'code_eval', etc.
+  ├─ priority: INTEGER  -- 1 = first choice, 2 = fallback, etc.
+  ├─ model_id: VARCHAR(50) FK → model_registry.id
+  ├─ conditions: JSONB  -- {language: 'hi', difficulty: 'Hard', budget_tier: 'NORMAL'}
+  ├─ pipeline_steps: JSONB  -- null for single-model, array for multi-model
+  ├─ is_cri_affecting: BOOLEAN  -- true = never budget-degraded
+  ├─ is_security_critical: BOOLEAN  -- true = never budget-degraded
+  ├─ is_active: BOOLEAN DEFAULT true
+  └─ UNIQUE(prompt_type, priority, conditions)
+3.2 Complete Routing Matrix
+Every prompt type with its model chain, conditions, and fallback sequence:
+3.2.1 Resume Parsing
+Pri	Model	Conditions	Pipeline	Notes
+1	gpt-4o-mini	language = EN	Single call	Default. ~$0.004/parse. 1-3 seconds.
+1	bhashini-nmt → gpt-4o-mini	language = HI, TE, TA, etc.	2-step pipeline	Bhashini translates to EN, then GPT parses. Better Hindi accuracy.
+2	claude-haiku-4.5	ANY (fallback)	Single call	If OpenAI down. Comparable quality. Slightly higher cost.
+3	gpt-4o	parse_confidence < 0.6 on retry	Single call	Premium retry for complex resumes that failed on gpt-4o-mini.
+CRI-Affecting: YES. Never budget-degraded.
+3.2.2 Code Evaluation
+Pri	Model	Conditions	Pipeline	Notes
+1	gpt-4o-mini	difficulty = Easy or Medium	Single call	~$0.004/eval. Good for standard coding questions.
+1	gpt-4o	difficulty = Hard	Single call	~$0.02/eval. Better reasoning for complex algorithms. Worth the cost for accuracy.
+2	claude-haiku-4.5	ANY (fallback)	Single call	If OpenAI down.
+3	claude-sonnet-4	difficulty = Hard AND haiku fails	Single call	Premium fallback for hardest evaluations.
+CRI-Affecting: YES. Never budget-degraded.
+3.2.3 Interview Evaluation
+Pri	Model	Conditions	Pipeline	Notes
+1	gpt-4o-mini	language = EN, text response	Single call	~$0.004/eval. Direct NLP evaluation.
+1	bhashini-asr → bhashini-nmt → gpt-4o-mini	language = HI, audio response	3-step pipeline	Transcribe Hindi → translate to EN → evaluate. ~$0.005 total.
+1	bhashini-asr → bhashini-nmt → gpt-4o-mini	language = TE/TA/KN, audio	3-step pipeline	Same pipeline, different Bhashini language model.
+2	whisper → gpt-4o-mini	language = HI, Bhashini timeout	2-step pipeline	Fallback if Bhashini ASR fails. OpenAI Whisper less accurate for Indian.
+3	gpt-4o	premium/complex interview	Single call	For detailed follow-up evaluations or edge cases.
+CRI-Affecting: YES. Never budget-degraded.
+3.2.4 Content Generation
+Pri	Model	Conditions	Pipeline	Notes
+1	gpt-4o-mini	language = EN	Single call	~$0.005/gen. Good creative output.
+1	gpt-4o-mini → bhashini-nmt	language = HI	2-step pipeline	Generate in EN, translate to Hindi. Better quality than direct Hindi gen.
+2	claude-haiku-4.5	ANY (fallback)	Single call	If OpenAI down. Claude often produces better creative content.
+CRI-Affecting: NO. First to degrade under budget pressure.
+Budget Behavior: CONSERVE: shorter max_tokens (500→300). CRITICAL: daily limit enforced (3/day). STOPPED: paused entirely.
+3.2.5 Cover Letter Generation
+Pri	Model	Conditions	Pipeline	Notes
+1	gpt-4o-mini	default	Single call	~$0.006/gen. Merges resume_data + JD Role DNA + company context.
+1	gpt-4o-mini → bhashini-nmt	language = HI	2-step pipeline	Generate EN, translate.
+2	claude-haiku-4.5	fallback	Single call	Claude Haiku often produces more natural cover letters.
+CRI-Affecting: NO. Degrades at CONSERVE: max 1/day per candidate.
+3.2.6 JD Parsing
+Pri	Model	Conditions	Pipeline	Notes
+1	gpt-4o-mini	default	Single call	~$0.003/parse. Same skill extraction logic as resume parsing.
+2	claude-haiku-4.5	fallback	Single call	If OpenAI down.
+CRI-Affecting: NO (but affects job matching quality). Degrades at STOPPED only.
+3.2.7 Fraud Triage
+Pri	Model	Conditions	Pipeline	Notes
+1	gpt-4o-mini	severity S0-S2	Single call	~$0.003/triage. AI classification + confidence for admin queue.
+1	gpt-4o	severity S3+	Single call	~$0.015/triage. Premium reasoning for high-severity fraud. Accuracy > cost.
+2	claude-sonnet-4	S3+ AND OpenAI down	Single call	Premium fallback for critical fraud decisions.
+Security-Critical: YES. NEVER budget-degraded. S3+ always gets premium model.
+3.2.8 Semantic Code Logic Hash
+Pri	Model	Conditions	Pipeline	Notes
+1	gpt-4o-mini	default	Single call	~$0.002/hash. Extracts logical approach summary for Trust Protocol Layer 3.
+2	claude-haiku-4.5	fallback	Single call	If OpenAI down.
+Security-Critical: YES. Part of Trust Protocol. Never degraded.
+3.2.9 Hindi Sentiment Classification
+Pri	Model	Conditions	Pipeline	Notes
+1	aikosh-sentiment	language = HI	Local/API call	$0. Free. Trained on Indian data. Better than GPT for Hindi sentiment.
+2	gpt-4o-mini	fallback	Single call	~$0.002. If AIKosh unavailable.
+CRI-Affecting: NO (task economy). Uses free model by default.
+ 
+4. Intelligence Layer 3: Budget-Aware Degradation
+CORAIS manages a daily $50 budget ceiling. Instead of a hard wall at $50, the system makes intelligent trade-offs as spending increases.
+4.1 Budget Tiers
+Tier	Spend Range	Status	Behavior
+NORMAL	$0 - $30 (0-60%)	Green	All models available. Premium (GPT-4o) used for Hard code evals and S3+ fraud. Full content generation. No restrictions.
+CONSERVE	$30 - $40 (60-80%)	Amber	Non-critical tasks downgrade: content max_tokens 500→300, cover letter 1/day/candidate, content daily limit 10→5. CRI-affecting and security tasks unchanged.
+CRITICAL	$40 - $47.50 (80-95%)	Red	Content generation PAUSED. Cover letter PAUSED. Only CRI-affecting tasks (resume parse, code eval, interview) and security tasks (fraud) process. Everything else queued for next day.
+STOPPED	$47.50 - $50 (95-100%)	Dark Red	Only cache-served and deterministic requests. CRI-affecting tasks still process (they're the product). Super Admin alerted. Can override ceiling temporarily.
+OVERRIDE	Above $50	Manual	Super Admin explicitly raised ceiling. Logged as admin_action. Auto-reverts at midnight.
+4.2 Task Priority Classification
+Task Type	Priority	Budget Behavior	Rationale
+CRI Computation	CRITICAL (but $0)	Never affected	Pure math. No LLM. Always runs.
+MCQ Grading	CRITICAL (but $0)	Never affected	Deterministic. No LLM. Always runs.
+Gold Standard Check	CRITICAL (but $0)	Never affected	Deterministic. No LLM. Always runs.
+Resume Parse	CRITICAL	Never degraded	CRI-affecting. The product IS the score.
+Code Evaluation	CRITICAL	Never degraded. Hard eval may downgrade from GPT-4o to GPT-4o-mini at CONSERVE.	CRI-affecting. Accuracy matters. Hard eval cost trade-off acceptable at CONSERVE.
+Interview Evaluation	CRITICAL	Never degraded	CRI-affecting. Communication scoring.
+Fraud Triage	CRITICAL	Never degraded. S3+ always gets premium model.	Security. Never compromised.
+Semantic Code Hash	CRITICAL	Never degraded	Trust Protocol. Anti-fraud.
+JD Parsing	HIGH	Paused at STOPPED only	Affects job matching but not CRI directly.
+Content Generation	NORMAL	Shortened at CONSERVE, paused at CRITICAL	Nice-to-have. Candidate can wait until tomorrow.
+Cover Letter	NORMAL	Limited at CONSERVE, paused at CRITICAL	Nice-to-have. Can wait.
+WhatsApp Translation	LOW	Paused at CRITICAL. Send in English.	Non-essential. English fallback acceptable.
+4.3 Budget Manager Implementation
+class BudgetManager {
+  private dailyCeiling: number = 50.00;  // USD
+  private overrideCeiling: number | null = null;
+  
+  async getCurrentSpend(): Promise<number> {
+    return await db.query(
+      'SELECT COALESCE(SUM(cost_usd), 0) FROM routing_logs
+       WHERE created_at >= CURRENT_DATE'
+    );
+  }
+  
+  async getBudgetTier(): Promise<BudgetTier> {
+    const spend = await this.getCurrentSpend();
+    const ceiling = this.overrideCeiling ?? this.dailyCeiling;
+    const pct = spend / ceiling;
+    if (pct < 0.60) return 'NORMAL';
+    if (pct < 0.80) return 'CONSERVE';
+    if (pct < 0.95) return 'CRITICAL';
+    return 'STOPPED';
+  }
+  
+  async canProcess(taskPriority: string): Promise<boolean> {
+    const tier = await this.getBudgetTier();
+    if (taskPriority === 'CRITICAL') return true;  // ALWAYS
+    if (tier === 'STOPPED') return false;
+    if (tier === 'CRITICAL' && taskPriority === 'NORMAL') return false;
+    return true;
+  }
+  
+  async getMaxTokens(promptType: string): Promise<number> {
+    const tier = await this.getBudgetTier();
+    const defaults = { content_gen: 500, cover_letter: 800 };
+    if (tier === 'CONSERVE') return Math.floor(defaults[promptType] * 0.6);
+    return defaults[promptType];
+  }
+}
+ 
+5. Intelligence Layer 4: Quality Tracking + Adaptive Learning
+Every AI call produces a result. But was the result GOOD? Quality tracking answers this by capturing downstream signals that indicate whether the AI's output was useful.
+5.1 Quality Signal Sources
+Prompt Type	Quality Signal	How It's Measured
+resume_parse	Did the candidate edit the parsed result?	Track field edits in resume builder. 0 edits = perfect parse (1.0). 3+ edits = poor parse (0.4).
+code_eval	Did admin override the AI evaluation?	HITL decision: approve = 1.0. Override with different score = 0.3. Escalate = 0.5.
+interview_eval	Does Communication score match recruiter feedback?	Post-reveal survey: 'communication matched profile' = 1.0. 'misleading' = 0.1.
+content_gen	Did candidate use the generated content?	Share = 1.0. Edit then share = 0.7. Edit heavily = 0.4. Discard all = 0.1.
+cover_letter	Did candidate use the cover letter?	Download PDF = 0.8. Merge with resume = 1.0. Discard = 0.1.
+jd_parse	Did recruiter edit parsed skills?	0 edits = 1.0. Added/removed skills = 0.5.
+fraud_triage	Did admin agree with AI recommendation?	Admin approved AI = 1.0. Admin overrode = 0.3.
+code_logic_hash	Were flagged submissions confirmed as fraud?	Admin confirmed = 1.0 (true positive). Admin cleared = 0.0 (false positive).
+sentiment_hi	Was gold standard accuracy maintained?	Gold standard match rate tracked per model. >90% = 1.0. <70% = 0.3.
+5.2 Performance Log Schema
+model_performance_log
+  ├─ id: UUID
+  ├─ routing_log_id: FK → routing_logs.id  -- the original AI call
+  ├─ prompt_type: VARCHAR(50)
+  ├─ model_id: VARCHAR(50)
+  ├─ quality_signal: DECIMAL  -- 0.0 to 1.0
+  ├─ signal_source: VARCHAR(50)  -- 'user_edit', 'admin_override', etc.
+  ├─ signal_details: JSONB  -- specific context
+  ├─ recorded_at: TIMESTAMPTZ
+  └─ INDEX: (prompt_type, model_id, recorded_at)
+5.3 Monthly Calibration Report
+CORAIS generates a monthly report for Super Admin showing model performance per task type:
+CORAIS MONTHLY QUALITY REPORT (auto-generated 1st of each month):
+
+┌─────────────────────────────────────────────┐
+│ RESUME PARSING                               │
+│  gpt-4o-mini (EN): 0.87 avg quality [342 calls]│
+│  bhashini+gpt-4o-mini (HI): 0.91 avg [48 calls]│
+│  claude-haiku (fallback): 0.84 avg [12 calls]   │
+│  → Recommendation: NONE (all above 0.80)        │
+├─────────────────────────────────────────────┤
+│ CODE EVALUATION                               │
+│  gpt-4o-mini (Easy/Med): 0.91 avg [580 calls]  │
+│  gpt-4o (Hard): 0.96 avg [45 calls]            │
+│  → Recommendation: KEEP. GPT-4o worth 4x cost   │
+│    for Hard evals (0.96 vs 0.78 on gpt-4o-mini) │
+├─────────────────────────────────────────────┤
+│ FRAUD TRIAGE                                  │
+│  gpt-4o-mini: 0.78 avg [89 calls]              │
+│  ⚠ ALERT: Below 0.80 threshold.                │
+│  → Recommendation: REVIEW fraud_triage_v1 prompt │
+│    OR switch S2 triage to gpt-4o                 │
+└─────────────────────────────────────────────┘
+⚠ Super Admin reviews and approves/rejects recommendations. CORAIS never auto-changes routing without human approval during MVP. Phase 2+: auto-adjust within guardrails.
+ 
+6. Enhanced Decision Gate v3.5
+The complete 8-stage routing pipeline that every AI request passes through.
+6.1 Stage-by-Stage Flow
+Stage 1: Cache Check
+•	Redis exact-match: key = SHA-256(prompt_type + JSON.stringify(input))
+•	TTL: 24 hours for resume parse, JD parse. 1 hour for content gen (more variability desired).
+•	Cache bypassed for: fraud triage (always fresh), interview eval (unique per session).
+IF cache HIT → return cached result. Cost: $0. Latency: <5ms.
+Stage 2: Deterministic Rules
+•	CRI computation: pure math (D0 formulas). No LLM needed. $0.
+•	TQS computation: gold standard comparison. Deterministic. $0.
+•	ESS computation: evidence strength score formula. $0.
+•	MCQ grading: answer key comparison. $0.
+IF rule match → compute locally. Cost: $0. Latency: <50ms.
+Stage 3: Template Fill
+•	WhatsApp templates: variable substitution ({name}, {score}, {job_title}). $0.
+•	Email templates: same pattern. $0.
+IF template match → fill variables. Cost: $0. Latency: <10ms.
+Stage 4: Budget Check (NEW)
+•	BudgetManager.getBudgetTier() → NORMAL / CONSERVE / CRITICAL / STOPPED
+•	BudgetManager.canProcess(taskPriority) → true / false
+•	If cannot process: return 429 with {reason, retry_after, budget_tier}
+•	If CONSERVE: adjust max_tokens for non-critical tasks
+IF budget_tier === 'STOPPED' AND task.priority !== 'CRITICAL':
+  → return 429 {reason: 'Daily budget reached. CRI tasks still processing.',
+     retry_after: secondsUntilMidnight()}
+Stage 5: Model Selection (NEW — The Intelligence)
+•	Lookup task_model_routing for this prompt_type
+•	Filter by: language, difficulty, budget_tier, user_tier
+•	Sort candidates by priority
+•	For each candidate (in priority order):
+◦	Check model_registry.health_status === 'healthy'
+◦	Check model_registry.is_active === true
+◦	Check rate limit not exceeded
+◦	If all pass: SELECT this model
+◦	If fails: try next priority
+•	If multi-step pipeline: validate ALL models in pipeline are healthy
+•	If no model available: return 503 {retry_after: 30}
+async function selectModel(promptType, conditions) {
+  const routes = await getRoutes(promptType, conditions);
+  // routes sorted by priority ASC
+  for (const route of routes) {
+    if (route.pipeline_steps) {
+      // Multi-model pipeline: ALL models must be healthy
+      const allHealthy = await Promise.all(
+        route.pipeline_steps.map(s => isModelHealthy(s.model_id))
+      );
+      if (allHealthy.every(h => h)) return route;
+    } else {
+      if (await isModelHealthy(route.model_id)) return route;
+    }
+  }
+  return null;  // no model available
+}
+Stage 6: Execute
+•	Single-model: call adapter directly
+•	Multi-model pipeline: execute steps sequentially, pass output of step N as input to step N+1
+•	Each step independently timed and cost-tracked
+•	If any step fails mid-pipeline: rollback (discard partial results), try fallback route
+async function executePipeline(route, input) {
+  const steps = route.pipeline_steps || [{model_id: route.model_id}];
+  let currentInput = input;
+  const stepLogs = [];
+  
+  for (const step of steps) {
+    const adapter = getAdapter(step.provider);
+    const start = Date.now();
+    try {
+      const result = await adapter.execute(step.model_id, step.prompt, currentInput);
+      stepLogs.push({model: step.model_id, latency: Date.now()-start, success: true});
+      currentInput = result;  // output becomes next step's input
+    } catch (error) {
+      stepLogs.push({model: step.model_id, latency: Date.now()-start, success: false});
+      throw new PipelineStepError(step.model_id, error, stepLogs);
+    }
+  }
+  return {result: currentInput, stepLogs};
+}
+Stage 7: Quality Signal Setup (NEW)
+•	Register quality tracking hooks based on prompt_type
+•	resume_parse: set hook to track candidate field edits within 24 hours
+•	code_eval: set hook to track HITL override within 48 hours
+•	content_gen: set hook to track share/discard within 24 hours
+•	Quality signal written to model_performance_log when hook fires
+Stage 8: Cache Write
+•	If response is cacheable: write to Redis with appropriate TTL
+•	Cache key includes: prompt_type + input hash (not model_id — so cache works across model switches)
+Entire 8-stage pipeline completes in < 15 seconds for any request type.
+ 
+7. Multi-Model Pipelines
+Some tasks require multiple models in sequence. CORAIS orchestrates these as atomic pipelines — either all steps succeed or the entire pipeline retries on a fallback route.
+7.1 Pipeline Definitions
+Pipeline 1: Hindi Interview Evaluation
+PIPELINE: hindi_interview_eval
+  Trigger: interview response with language = HI and audio = true
+
+  Step 1: Bhashini ASR
+    Model: bhashini-asr
+    Input: Hindi audio file (WebM/WAV)
+    Output: Hindi text transcription
+    Cost: ~$0.001  |  Latency: 3-5s
+    Fallback: whisper-1 (OpenAI) at $0.006/min
+
+  Step 2: Bhashini NMT
+    Model: bhashini-nmt
+    Input: Hindi text (from Step 1)
+    Output: English translation
+    Cost: ~$0.0005  |  Latency: 1-2s
+    Fallback: google-translate at ~$0.00002/char
+
+  Step 3: GPT-4o-mini Evaluation
+    Model: gpt-4o-mini
+    Input: English text + rubric + Role DNA context
+    Output: 5-dimension Communication scores
+    Cost: ~$0.004  |  Latency: 2-3s
+    Fallback: claude-haiku-4.5
+
+  TOTAL: ~$0.0055  |  6-10 seconds  |  3 models, 2 providers
+  vs ALL-OPENAI: ~$0.012  |  8-12 seconds  |  worse Hindi accuracy
+  SAVINGS: 54% cost reduction + better quality for Hindi
+Pipeline 2: Hindi Content Generation
+PIPELINE: hindi_content_gen
+  Trigger: content generation with language = HI
+
+  Step 1: GPT-4o-mini Content Generation
+    Model: gpt-4o-mini
+    Input: CRI data + skills + prompt (in English)
+    Output: English content (3 alternatives)
+    Cost: ~$0.005  |  Latency: 2-4s
+
+  Step 2: Bhashini NMT Translation
+    Model: bhashini-nmt
+    Input: English content (all 3 alternatives)
+    Output: Hindi content (all 3 alternatives)
+    Cost: ~$0.001  |  Latency: 1-2s
+
+  TOTAL: ~$0.006  |  3-6 seconds  |  2 models, 2 providers
+  WHY NOT DIRECT HINDI GEN: GPT-4o-mini produces better
+  structured content in English. Bhashini NMT produces
+  better Hindi than GPT's native Hindi output.
+Pipeline 3: Hindi Resume Parsing
+PIPELINE: hindi_resume_parse
+  Trigger: resume upload with detected language = HI
+
+  Step 1: Bhashini NMT Translation
+    Model: bhashini-nmt
+    Input: Hindi resume text (extracted from PDF)
+    Output: English translation
+    Cost: ~$0.0005  |  Latency: 1-2s
+
+  Step 2: GPT-4o-mini Parsing
+    Model: gpt-4o-mini
+    Input: English text + resume_parse_v1 prompt
+    Output: {skills[], education[], experience[], certifications[]}
+    Cost: ~$0.004  |  Latency: 2-4s
+
+  TOTAL: ~$0.0045  |  3-6 seconds
+Pipeline 4: Regional Language WhatsApp
+PIPELINE: regional_whatsapp_translate
+  Trigger: WhatsApp template for user with language != EN and != HI
+
+  Step 1: Bhashini NMT
+    Model: bhashini-nmt
+    Input: English template text (with variables already filled)
+    Output: Telugu/Tamil/Kannada/Marathi/Bengali translation
+    Cost: ~$0.0002  |  Latency: 1s
+
+  TOTAL: ~$0.0002  |  1 second  |  Negligible cost
+  vs Google Translate: similar cost but Bhashini better for Indian
+ 
+8. Agent-CORAIS Integration
+Every AI Workforce agent calls CORAIS through a unified interface. Agents never specify which model to use — CORAIS decides based on task type, language, difficulty, and budget.
+8.1 Agent Call Interface
+// Every agent calls CORAIS the same way:
+interface CORAISRequest {
+  prompt_type: PromptType;  // 'resume_parse', 'code_eval', etc.
+  input: any;  // the data to process
+  context: {
+    candidate_id?: string;
+    tenant_id?: string;
+    language?: string;  // 'en', 'hi', 'te', etc.
+    difficulty?: 'Easy' | 'Medium' | 'Hard';
+    is_retry?: boolean;
+    correlation_id: string;  // for tracing event chains
+  };
+}
+
+interface CORAISResponse {
+  result: any;  // the AI output
+  metadata: {
+    model_used: string;  // which model(s) actually processed this
+    pipeline_steps?: string[];  // for multi-model pipelines
+    total_cost_usd: number;
+    total_latency_ms: number;
+    cache_hit: boolean;
+    budget_tier: BudgetTier;
+    quality_tracking_id: string;  // for quality signal linkage
+  };
+}
+
+// Agent code stays clean:
+// Agent 1 (Resume Parser):
+const result = await corais.process({
+  prompt_type: 'resume_parse',
+  input: { text: resumeText },
+  context: { candidate_id, language: detectedLanguage }
+});
+// Agent doesn't know or care if GPT-4o-mini, Bhashini pipeline,
+// or Claude processed it. Agent gets structured skills back.
+8.2 Agent-Specific CORAIS Behavior
+Agent	Prompt Types Used	CORAIS Behavior	Special Rules
+Agent 1: Resume Parser	resume_parse	Language detection → EN route or Hindi pipeline. Cache aggressively (same resume = same skills).	HITL at confidence < 0.6. Quality tracked via candidate edits.
+Agent 2: Challenge Evaluator	code_eval	Difficulty-aware: Easy/Med → gpt-4o-mini, Hard → gpt-4o. MCQ at $0 (no CORAIS call).	HITL at integrity < 0.5. Quality tracked via admin override.
+Agent 3: Task Quality Validator	(none — deterministic)	Does NOT call CORAIS. Gold standard comparison is pure logic. $0.	N/A. Agent 3 never touches the AI gateway.
+Agent 4: Content Generator	content_gen, cover_letter	Language-aware pipeline. First to budget-degrade. Quality tracked via candidate share/discard.	Daily limit enforced (10 free tier). Max_tokens reduced at CONSERVE.
+Agent 5: Fraud Detector	fraud_triage, code_logic_hash	Severity-aware: S0-S2 → gpt-4o-mini. S3+ → gpt-4o (premium). NEVER budget-degraded.	Quality tracked via admin agreement with AI recommendation.
+8.3 Event Flow: Agent → CORAIS → Agent
+EXAMPLE: Student uploads Hindi resume
+
+1. Frontend: POST /v1/candidates/resume (Hindi PDF)
+2. Agent 1 (Resume Parser): detects language = HI
+3. Agent 1 calls CORAIS: {prompt_type: 'resume_parse', language: 'hi'}
+4. CORAIS Decision Gate:
+   Stage 1: Cache MISS (first upload)
+   Stage 4: Budget = NORMAL
+   Stage 5: Select pipeline: bhashini-nmt → gpt-4o-mini
+   Stage 6: Execute pipeline (translate → parse)
+   Stage 7: Set quality hook (track edits in 24h)
+   Stage 8: Cache write
+5. CORAIS returns: {skills: ['Python','SQL','Excel'], ...}
+6. Agent 1 emits EVENT: resume_parsed
+7. CRI Engine subscribes: recomputes F_REL + F_READY
+8. CRI Engine emits: cri_updated {delta: +12}
+9. WhatsApp Agent subscribes: sends T4 score_update (in Hindi via Bhashini)
+10. College Dashboard subscribes: campus CRI recalculates
+11. Fraud Detector subscribes: checks for duplicate submission
+
+TOTAL: 11 actions from 1 resume upload.
+CORAIS involvement: Steps 3-5 (model selection + execution).
+Agent communication: Steps 6-11 (event-driven, async).
+All traced via single correlation_id.
+ 
+9. CORAIS Monitoring Dashboard
+The CORAIS dashboard is the nerve center for AI operations. It shows real-time and historical data about model performance, cost, quality, and routing decisions.
+9.1 Dashboard Panels
+CORAIS DASHBOARD (admin.fieox.com/corais):
+
+┌─────────────────────────────────────────────┐
+│ TODAY'S COST                    $12.47 / $50.00 │
+│ [██████████░░░░░░░░░░░░░░░] 24.9% NORMAL   │
+│ Cache Hit: 64% | LLM Calls: 142 | Avg: $0.0043 │
+├─────────────────────────────────────────────┤
+│ COST BY PROMPT TYPE                              │
+│  resume_parse:    $2.10 (48 calls)               │
+│  code_eval:       $3.80 (62 calls, 8 Hard=gpt-4o)│
+│  interview_eval:  $2.20 (22 calls, 6 Hindi pipe) │
+│  content_gen:     $2.50 (50 calls)               │
+│  cover_letter:    $1.20 (20 calls)               │
+│  fraud_triage:    $0.27 (9 calls, 2 S3=gpt-4o)  │
+│  jd_parse:        $0.18 (6 calls)                │
+│  code_logic:      $0.22 (11 calls)               │
+├─────────────────────────────────────────────┤
+│ MODEL HEALTH                                     │
+│  ● gpt-4o-mini    HEALTHY  p50: 1.2s  p99: 3.1s  │
+│  ● gpt-4o         HEALTHY  p50: 4.1s  p99: 8.2s  │
+│  ● claude-haiku   HEALTHY  p50: 1.4s  p99: 3.5s  │
+│  ● bhashini-asr   HEALTHY  p50: 3.8s  p99: 6.1s  │
+│  ● bhashini-nmt   HEALTHY  p50: 1.1s  p99: 2.4s  │
+│  ● aikosh-sent    HEALTHY  p50: 0.3s  p99: 0.8s  │
+├─────────────────────────────────────────────┤
+│ QUALITY (Last 30 Days)                           │
+│  resume_parse:  0.87 (342 signals)               │
+│  code_eval:     0.91 (580 signals)               │
+│  interview_eval: 0.83 (145 signals)              │
+│  content_gen:   0.74 (890 signals)               │
+│  fraud_triage:  0.78 ⚠ (89 signals) BELOW 0.80  │
+├─────────────────────────────────────────────┤
+│ ROUTING DECISIONS (Last 24h)                     │
+│  Cache resolved:     64% (████████████)         │
+│  Rules resolved:     12% (███)                  │
+│  Templates resolved:  6% (█)                    │
+│  gpt-4o-mini calls:  14% (███)                  │
+│  gpt-4o calls:        2% (▌)                    │
+│  Bhashini pipeline:   2% (▌)                    │
+└─────────────────────────────────────────────┘
+ 
+10. Milestone-Level Build Sequence
+CORAIS intelligence grows across milestones. Each milestone adds new capabilities to the Decision Gate.
+MS	CORAIS Capabilities	Models Active	New Adapters	Acceptance Tests
+M1	Decision Gate v3.0 (Stages 1-3 + 6 + 8). Single model routing. Redis cache. Cost logging. Budget ceiling ($50 hard stop). Prompt registry: resume_parse_v1, code_eval_v1.	gpt-4o-mini only	OpenAIAdapter.ts, BhashiniAdapter.ts (stub)	Cache hit on duplicate. Cost logged. Budget blocks at ceiling. Resume parses correctly.
+M2	+ Bhashini full implementation. Multi-model pipelines (Hindi interview: 3-step). Language-conditional routing. Prompt: interview_eval_v1, fraud_triage_v1.	+ bhashini-asr, bhashini-nmt	BhashiniAdapter.ts (full)	Hindi interview pipeline completes in < 20s. Bhashini fallback-to-OpenAI works on timeout.
+M3	+ content_gen_v1, cover_letter_v1, jd_parse_v1, code_logic_v1 prompts. AIKosh sentiment model. Hindi content pipeline.	+ aikosh-sentiment	AIKoshAdapter.ts	9 prompt types all routing correctly. AIKosh sentiment at $0 for Hindi. Content generates in Hindi.
+M4	+ Bhashini NMT for WhatsApp auto-translation. Regional language support. Full language detection.	All models active	None new	WhatsApp in Telugu/Tamil via Bhashini. Language switcher functional.
+M5	+ Stage 4 (Budget-aware degradation, 4 tiers). Stage 5 (intelligent model selection with fallback). Stage 7 (quality tracking). Health monitoring (60s per model). ClaudeAdapter. Monthly quality report. Model registry admin UI.	+ claude-haiku-4.5, gpt-4o, claude-sonnet-4	ClaudeAdapter.ts	Budget tiers work (NORMAL/CONSERVE/CRITICAL/STOPPED). Model failover: disable gpt-4o-mini → auto-routes to claude-haiku. Quality signals tracked. Monthly report generates.
+M6	Full Decision Gate v3.5 (all 8 stages). End-to-end verification across all prompt types, all languages, all budget tiers, all failover paths.	All 8 models	None	Every routing path tested. Every pipeline tested. Every failover tested. Every budget tier tested. Dashboard shows real data.
+10.1 M1 CORAIS Acceptance Tests
+✅ Redis cache: same resume uploaded twice, second returns from cache ($0). routing_logs confirms cache_hit: true.
+✅ Cost tracking: after 10 AI calls, routing_logs has 10 rows with correct cost_usd per call.
+✅ Budget ceiling: set to $1 artificially. After exceeding, non-critical returns 429 with retry_after.
+✅ CRI computation resolved in Stage 2 (Rules). No LLM call. $0.
+✅ MCQ grading resolved in Stage 2. No LLM call. $0.
+✅ Resume parse: returns structured skills within 15 seconds. Cost logged.
+❌ Cache miss on identical input. Cost not logged. Budget not enforced.
+10.2 M2 CORAIS Acceptance Tests
+✅ Hindi audio interview: Bhashini ASR → NMT → GPT-4o-mini pipeline completes in < 20 seconds.
+✅ Bhashini timeout test: artificially delay Bhashini > 5 seconds. CORAIS falls back to OpenAI Whisper. Result still returns.
+✅ routing_logs shows pipeline_steps: ['bhashini-asr', 'bhashini-nmt', 'gpt-4o-mini'] for Hindi interview.
+✅ Fraud triage: GPT-4o-mini returns classification + confidence. Logged correctly.
+❌ Hindi pipeline fails without fallback. Pipeline steps not logged.
+10.3 M3 CORAIS Acceptance Tests
+✅ Content generation: 3 alternatives returned. CRI-aware (references actual skills).
+✅ Hindi content: English generation → Bhashini NMT translation. Hindi output readable and grammatical.
+✅ AIKosh sentiment: Hindi sentiment task uses aikosh-sentiment model ($0). routing_logs confirms model_id.
+✅ JD parsing: extracts Role DNA from free-text JD. Skills mapped to canonical dictionary.
+✅ Cover letter: merges candidate resume_data + JD Role DNA. Output references both.
+✅ All 9 prompt types routing correctly per task_model_routing matrix.
+❌ Content not personalized. AIKosh not used for Hindi sentiment. JD skills not canonical.
+10.4 M5 CORAIS Acceptance Tests (Full Intelligence)
+✅ Budget NORMAL: all models available. GPT-4o used for Hard code eval.
+✅ Budget CONSERVE: content max_tokens reduced (300 vs 500). Cover letter limited to 1/day. CRI tasks unchanged.
+✅ Budget CRITICAL: content PAUSED. Cover letter PAUSED. Resume parse STILL WORKS. Fraud triage STILL WORKS.
+✅ Budget STOPPED: only cache + deterministic + CRI-critical tasks process. Admin alerted.
+✅ Model failover: disable gpt-4o-mini in model_registry (is_active=false). All requests auto-route to claude-haiku. Zero errors. Users don't notice.
+✅ Health monitoring: model health checked every 60 seconds. Dashboard shows green/amber/red per model.
+✅ Quality tracking: complete a resume parse → edit fields in builder → quality signal recorded in model_performance_log.
+✅ Monthly report: generates quality report with per-model per-task averages and recommendations.
+✅ Fraud triage S3+: automatically routes to gpt-4o (not gpt-4o-mini) regardless of budget tier.
+❌ Budget degradation affects CRI tasks. Failover doesn't work. Quality signals not recorded.
+ 
+11. Adapter Specifications
+Each provider is integrated via a single adapter file implementing a common interface. Adding a new provider = one new file + model_registry rows.
+11.1 Common Interface
+interface ModelAdapter {
+  provider: string;
+  
+  // Health check (lightweight, < 1 second)
+  ping(model: ModelRegistryEntry): Promise<boolean>;
+  
+  // Execute a prompt
+  execute(modelId: string, prompt: string, input: any,
+          options?: {max_tokens?: number, temperature?: number}
+  ): Promise<{output: any, usage: {input_tokens: number,
+             output_tokens: number}, latency_ms: number}>;
+  
+  // Calculate cost from usage
+  calculateCost(modelId: string, usage: TokenUsage): number;
+}
+11.2 Adapter Files
+File	Models Served	External Dependency	Build Milestone
+OpenAIAdapter.ts	gpt-4o-mini, gpt-4o, whisper-1	OpenAI API key (OPENAI_API_KEY)	M1 (Week 2)
+BhashiniAdapter.ts	bhashini-asr, bhashini-nmt, bhashini-tts	Bhashini API key (BHASHINI_API_KEY, BHASHINI_USER_ID)	M1 stub, M2 full
+AIKoshAdapter.ts	aikosh-sentiment, aikosh-ner (future)	AIKosh API key (AIKOSH_API_KEY)	M3
+ClaudeAdapter.ts	claude-haiku-4.5, claude-sonnet-4	Anthropic API key (ANTHROPIC_API_KEY)	M5
+GeminiAdapter.ts	gemini-2.0-flash (future)	Google AI API key	Phase 2 (post-launch)
+LocalModelAdapter.ts	fine-tuned models (future)	Local GPU or IndiaAI compute	Phase 3 (post-Series-A)
+Adapters 1-4 are in-scope for the current build. Adapters 5-6 are future. The interface is designed so adding them is a single file + model_registry rows.
+ 
+12. CORAIS Admin UI
+Super Admin manages CORAIS through the admin panel. These are the CORAIS-specific screens:
+12.1 Pages
+Screen	What It Shows
+admin.fieox.com/corais	Main dashboard: today's cost, budget gauge, cache hit rate, routing distribution chart, model health indicators
+admin.fieox.com/corais/models	Model Registry manager: view all models, health status, latency p50/p99, toggle is_active, edit cost rates
+admin.fieox.com/corais/routing	Task-Model Routing: view/edit routing matrix. Change priorities. Add conditions. Toggle routes.
+admin.fieox.com/corais/budget	Budget settings: daily ceiling, override button (with audit log), tier thresholds, historical spend chart
+admin.fieox.com/corais/quality	Quality dashboard: per-model per-task quality scores (30-day rolling). Monthly report preview. Recommendations.
+admin.fieox.com/corais/prompts	Prompt Registry: view/edit all prompt templates. Version history. A/B test config (future).
+admin.fieox.com/corais/logs	Routing Logs explorer: search by candidate, prompt type, model, date. View full request/response (redacted PII). Cost breakdown.
+admin.fieox.com/corais/pipelines	Pipeline monitor: active multi-model pipelines, step-by-step timing, failure rate per pipeline.
+12.2 Admin Actions
+Action	Permission Required	Audit Logged
+Toggle model active/inactive	Super Admin only	Yes: who, when, which model, previous state
+Change routing priority	Super Admin only	Yes: which route, old priority, new priority
+Override budget ceiling	Super Admin only	Yes: old ceiling, new ceiling, reason, auto-revert time
+Edit prompt template	Super Admin only	Yes: prompt_id, version number, diff of changes
+Approve quality recommendation	Super Admin only	Yes: recommendation details, approved/rejected
+View routing logs	Admin+	No (read-only)
+View cost dashboard	Admin+	No (read-only)

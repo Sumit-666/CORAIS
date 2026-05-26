@@ -1,0 +1,28 @@
+[
+  {
+    "id": "86537c02",
+    "timestamp": "2026-05-22T13:38:44",
+    "prompt_type": "jd_parsing",
+    "model_id": "gpt-4.1-nano",
+    "model_name": "GPT-4.1 Nano",
+    "cost_usd": 6.8e-05,
+    "latency_ms": 6594,
+    "cache_hit": false,
+    "budget_tier": "NORMAL",
+    "input_tokens": 236,
+    "output_tokens": 111
+  },
+  {
+    "id": "939754a0",
+    "timestamp": "2026-05-25T16:01:08",
+    "prompt_type": "jd_parsing",
+    "model_id": "gpt-4.1-nano",
+    "model_name": "GPT-4.1 Nano",
+    "cost_usd": 6.2e-05,
+    "latency_ms": 5875,
+    "cache_hit": false,
+    "budget_tier": "NORMAL",
+    "input_tokens": 236,
+    "output_tokens": 96
+  }
+]
