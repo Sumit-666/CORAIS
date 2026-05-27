@@ -573,7 +573,8 @@ export default function AuthPage() {
           <h1 className="text-2xl font-extrabold text-gray-800 leading-tight">
             {heading}
           </h1>
-          <div className="rounded-full bg-gray-300 mt-4 mb-4">
+          {mode === "user" && sub === "signin" && (
+            <div className="rounded-full bg-gray-300 mt-4 mb-4">
             <GoogleLogin
               onSuccess={async (credentialResponse) => {
                 const res = await fetch("http://localhost:5000/api/auth/google", {
@@ -597,6 +598,8 @@ export default function AuthPage() {
               }}
             />
           </div>
+          )}
+          
 
           {error && (
             <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-5">
@@ -640,7 +643,7 @@ export default function AuthPage() {
                 </button>
               </span>
             )}
-            {mode === "admin" && sub === "signin" && (
+            {/* {mode === "admin" && sub === "signin" && (
               <span>
                 No admin yet?{" "}
                 <button
@@ -650,7 +653,7 @@ export default function AuthPage() {
                   First-time Setup
                 </button>
               </span>
-            )}
+            )} */}
             {mode === "admin" && sub === "setup" && (
               <span>
                 Have an account?{" "}
